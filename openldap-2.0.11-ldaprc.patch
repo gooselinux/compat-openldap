@@ -1,0 +1,13 @@
+diff -up openldap-2.4.11/libraries/libldap/init.c.patch2 openldap-2.4.11/libraries/libldap/init.c
+--- openldap-2.4.11/libraries/libldap/init.c.patch2	2008-02-12 00:26:41.000000000 +0100
++++ openldap-2.4.11/libraries/libldap/init.c	2008-09-01 09:57:09.000000000 +0200
+@@ -327,9 +327,6 @@ static void openldap_ldap_init_w_usercon
+ 	if(path != NULL) {
+ 		LDAP_FREE(path);
+ 	}
+-
+-	/* try file */
+-	openldap_ldap_init_w_conf(file, 1);
+ }
+ 
+ static void openldap_ldap_init_w_env(

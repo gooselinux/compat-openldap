@@ -1,0 +1,198 @@
+diff -up openldap-2.3.43/libraries/libldap/os-ip.c.orig openldap-2.3.43/libraries/libldap/os-ip.c
+--- openldap-2.3.43/libraries/libldap/os-ip.c.orig	2008-05-19 19:28:54.000000000 -0400
++++ openldap-2.3.43/libraries/libldap/os-ip.c	2009-07-29 17:01:32.000000000 -0400
+@@ -738,6 +738,9 @@ ldap_mark_select_read( LDAP *ld, Sockbuf
+ 
+ 	sip = (struct selectinfo *)ld->ld_selectinfo;
+ 
++	if (ber_sockbuf_ctrl( sb, LBER_SB_OPT_DATA_READY, NULL ))
++		return;
++
+ 	ber_sockbuf_ctrl( sb, LBER_SB_OPT_GET_FD, &sd );
+ 
+ #ifdef HAVE_POLL
+diff -up openldap-2.3.43/libraries/libldap/result.c.orig openldap-2.3.43/libraries/libldap/result.c
+--- openldap-2.3.43/libraries/libldap/result.c.orig	2009-07-29 17:00:42.000000000 -0400
++++ openldap-2.3.43/libraries/libldap/result.c	2009-07-29 18:10:35.000000000 -0400
+@@ -73,7 +73,7 @@ static int ldap_mark_abandoned LDAP_P(( 
+ static int wait4msg LDAP_P(( LDAP *ld, ber_int_t msgid, int all, struct timeval *timeout,
+ 	LDAPMessage **result ));
+ static ber_tag_t try_read1msg LDAP_P(( LDAP *ld, ber_int_t msgid,
+-	int all, LDAPConn **lc, LDAPMessage **result ));
++	int all, LDAPConn *lc, LDAPMessage **result ));
+ static ber_tag_t build_result_ber LDAP_P(( LDAP *ld, BerElement **bp, LDAPRequest *lr ));
+ static void merge_error_info LDAP_P(( LDAP *ld, LDAPRequest *parentr, LDAPRequest *lr ));
+ static LDAPMessage * chkResponseList LDAP_P(( LDAP *ld, int msgid, int all));
+@@ -118,15 +118,9 @@ ldap_result(
+ #ifdef LDAP_R_COMPILE
+ 	ldap_pvt_thread_mutex_lock( &ld->ld_res_mutex );
+ #endif
+-	lm = chkResponseList(ld, msgid, all);
+ 
+-	if ( lm == NULL ) {
+-		rc = wait4msg( ld, msgid, all, timeout, result );
+-	} else {
+-		*result = lm;
+-		ld->ld_errno = LDAP_SUCCESS;
+-		rc = lm->lm_msgtype;
+-	}
++	rc = wait4msg( ld, msgid, all, timeout, result );
++
+ #ifdef LDAP_R_COMPILE
+ 	ldap_pvt_thread_mutex_unlock( &ld->ld_res_mutex );
+ #endif
+@@ -233,7 +227,7 @@ wait4msg(
+ 			*tvp;
+ 	time_t		start_time = 0;
+ 	time_t		tmp_time;
+-	LDAPConn	*lc;
++	LDAPConn	*lc, *nextlc;
+ 
+ 	assert( ld != NULL );
+ 	assert( result != NULL );
+@@ -280,13 +274,6 @@ wait4msg(
+ 			for ( lc = ld->ld_conns; lc != NULL; lc = lc->lconn_next ) {
+ 				if ( ber_sockbuf_ctrl( lc->lconn_sb,
+ 						LBER_SB_OPT_DATA_READY, NULL ) ) {
+-#ifdef LDAP_R_COMPILE
+-					ldap_pvt_thread_mutex_unlock( &ld->ld_conn_mutex );
+-#endif
+-					rc = try_read1msg( ld, msgid, all, &lc, result );
+-#ifdef LDAP_R_COMPILE
+-					ldap_pvt_thread_mutex_lock( &ld->ld_conn_mutex );
+-#endif
+ 					lc_ready = 1;
+ 					break;
+ 				}
+@@ -319,7 +306,11 @@ wait4msg(
+ 				if ( rc == -1 ) {
+ 					rc = LDAP_MSG_X_KEEP_LOOKING;	/* select interrupted: loop */
+ 				} else {
+-					rc = LDAP_MSG_X_KEEP_LOOKING;
++					lc_ready = 1;
++				}
++			}
++			if ( lc_ready ) {
++				rc = LDAP_MSG_X_KEEP_LOOKING;
+ #ifdef LDAP_R_COMPILE
+ 					ldap_pvt_thread_mutex_lock( &ld->ld_req_mutex );
+ #endif
+@@ -335,38 +326,43 @@ wait4msg(
+ 					ldap_pvt_thread_mutex_lock( &ld->ld_conn_mutex );
+ #endif
+ 					for ( lc = ld->ld_conns;
+-						rc == LDAP_MSG_X_KEEP_LOOKING && lc != NULL; )
++						rc == LDAP_MSG_X_KEEP_LOOKING && lc != NULL;
++						lc = nextlc )
+ 					{
+ 						if ( lc->lconn_status == LDAP_CONNST_CONNECTED &&
+ 							ldap_is_read_ready( ld, lc->lconn_sb ))
+ 						{
++							/* Don't let it get freed out from under us */
++							++lc->lconn_refcnt;
+ #ifdef LDAP_R_COMPILE
+ 							ldap_pvt_thread_mutex_unlock( &ld->ld_conn_mutex );
+ #endif
+-							rc = try_read1msg( ld, msgid, all, &lc, result );
++							rc = try_read1msg( ld, msgid, all, lc, result );
++							nextlc = lc->lconn_next;
++
++							/* Only take locks if we're really freeing */
++							if ( lc->lconn_refcnt <= 1 ) {
+ #ifdef LDAP_R_COMPILE
+-							ldap_pvt_thread_mutex_lock( &ld->ld_conn_mutex );
++								ldap_pvt_thread_mutex_lock( &ld->ld_req_mutex );
+ #endif
+-							if ( lc == NULL ) {
+-								/* if lc gets free()'d,
+-								 * there's no guarantee
+-								 * lc->lconn_next is still
+-								 * sane; better restart
+-								 * (ITS#4405) */
+-								lc = ld->ld_conns;
+-
+-								/* don't get to next conn! */
+-								break;
++								ldap_free_connection( ld, lc, 0, 1 );
++#ifdef LDAP_R_COMPILE
++								ldap_pvt_thread_mutex_unlock( &ld->ld_req_mutex );
++#endif
++							} else {
++								--lc->lconn_refcnt;
+ 							}
++#ifdef LDAP_R_COMPILE
++							ldap_pvt_thread_mutex_lock( &ld->ld_conn_mutex );
++#endif
++						} else {
++							/* next conn */
++							nextlc = lc->lconn_next;
+ 						}
+-
+-						/* next conn */
+-						lc = lc->lconn_next;
+ 					}
+ #ifdef LDAP_R_COMPILE
+ 					ldap_pvt_thread_mutex_unlock( &ld->ld_conn_mutex );
+ #endif
+-				}
+ 			}
+ 		}
+ 
+@@ -380,7 +376,6 @@ wait4msg(
+ 			if ( tv0.tv_sec <= delta_time ) {
+ 				rc = 0;	/* timed out */
+ 				ld->ld_errno = LDAP_TIMEOUT;
+-				break;
+ 			}
+ 			tv0.tv_sec -= delta_time;
+ 			tv.tv_sec = tv0.tv_sec;
+@@ -400,7 +395,7 @@ try_read1msg(
+ 	LDAP *ld,
+ 	ber_int_t msgid,
+ 	int all,
+-	LDAPConn **lcp,
++	LDAPConn *lc,
+ 	LDAPMessage **result )
+ {
+ 	BerElement	*ber;
+@@ -410,7 +405,6 @@ try_read1msg(
+ 	ber_len_t	len;
+ 	int		foundit = 0;
+ 	LDAPRequest	*lr, *tmplr;
+-	LDAPConn	*lc;
+ 	BerElement	tmpber;
+ 	int		rc, refer_cnt, hadref, simple_request, err;
+ 	ber_int_t	lderr;
+@@ -431,14 +425,11 @@ try_read1msg(
+ 	}	v3ref;
+ 
+ 	assert( ld != NULL );
+-	assert( lcp != NULL );
+-	assert( *lcp != NULL );
++	assert( lc != NULL );
+ 	
+ 	Debug( LDAP_DEBUG_TRACE, "read1msg: ld %p msgid %d all %d\n",
+ 		(void *)ld, msgid, all );
+ 
+-	lc = *lcp;
+-
+ retry:
+ 	if ( lc->lconn_ber == NULL ) {
+ 		lc->lconn_ber = ldap_alloc_ber_with_options(ld);
+@@ -839,14 +830,8 @@ lr->lr_res_matched ? lr->lr_res_matched 
+ 			}
+ 
+ 			if ( lc != NULL ) {
+-#ifdef LDAP_R_COMPILE
+-				ldap_pvt_thread_mutex_lock( &ld->ld_req_mutex );
+-#endif
+-				ldap_free_connection( ld, lc, 0, 1 );
+-#ifdef LDAP_R_COMPILE
+-				ldap_pvt_thread_mutex_unlock( &ld->ld_req_mutex );
+-#endif
+-				lc = *lcp = NULL;
++				--lc->lconn_refcnt;
++				lc = NULL;
+ 			}
+ 		}
+ 	}

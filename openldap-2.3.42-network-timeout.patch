@@ -1,0 +1,54 @@
+459132: RFE: CRM 1845142 'OpenLDAP libraries on RHEL 4 and failover'
+
+Source: upstream, cvs diff -r 1.105 -r 1.106 init.c
+        (+ delete other than NETWORK_TIMEOUT options)
+
+diff -up openldap-2.3.42/doc/man/man5/ldap.conf.5.network-timeout openldap-2.3.42/doc/man/man5/ldap.conf.5
+--- openldap-2.3.42/doc/man/man5/ldap.conf.5.network-timeout	2008-08-18 10:52:11.000000000 +0200
++++ openldap-2.3.42/doc/man/man5/ldap.conf.5	2008-02-12 00:24:09.000000000 +0100
+@@ -86,6 +86,10 @@ list of hosts may be provided.
+ is deprecated in favor of
+ .BR URI .
+ .TP
++.B NETWORK_TIMEOUT <integer>
++Specifies the timeout (in seconds) after which the poll(2)/select(2)
++following a connect(2) returns in case of no activity.
++.TP
+ .B PORT <port>
+ Specifies the default port used when connecting to LDAP servers(s).
+ The port may be specified as a number.
+diff -up openldap-2.3.42/libraries/libldap/init.c.network-timeout openldap-2.3.42/libraries/libldap/init.c
+--- openldap-2.3.42/libraries/libldap/init.c.network-timeout	2008-08-18 10:20:20.000000000 +0200
++++ openldap-2.3.42/libraries/libldap/init.c	2008-08-18 10:48:37.000000000 +0200
+@@ -43,6 +43,8 @@ struct ldapoptions ldap_int_global_optio
+ #define ATTR_SASL	6
+ #define ATTR_TLS	7
+ 
++#define ATTR_OPT_TV	8
++
+ struct ol_keyvalue {
+ 	const char *		key;
+ 	int			value;
+@@ -63,6 +65,7 @@ static const struct ol_attribute {
+ 	const void *	data;
+ 	size_t		offset;
+ } attrs[] = {
++	{0, ATTR_OPT_TV,	"NETWORK_TIMEOUT",	NULL,	LDAP_OPT_NETWORK_TIMEOUT},
+ 	{0, ATTR_KV,		"DEREF",	deref_kv, /* or &deref_kv[0] */
+ 		offsetof(struct ldapoptions, ldo_deref)},
+ 	{0, ATTR_INT,		"SIZELIMIT",	NULL,
+@@ -241,6 +244,14 @@ static void openldap_ldap_init_w_conf(
+ 			   	ldap_int_tls_config( NULL, attrs[i].offset, opt );
+ #endif
+ 				break;
++			case ATTR_OPT_TV: {
++				struct timeval tv;
++				tv.tv_sec = atol( opt );
++				tv.tv_usec = 0;
++				if ( tv.tv_sec > 0 ) {
++					(void)ldap_set_option( NULL, attrs[i].offset, (const void *)&tv);
++				}
++				} break;
+ 			}
+ 
+ 			break;

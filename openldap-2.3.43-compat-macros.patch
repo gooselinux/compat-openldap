@@ -1,0 +1,26 @@
+--- openldap-2.3.43/libraries/libldap/os-ip.c.orig	2010-05-06 13:48:15.000000000 +0200
++++ openldap-2.3.43/libraries/libldap/os-ip.c	2010-05-06 13:48:23.000000000 +0200
+@@ -652,7 +652,7 @@ ldap_host_connected_to( Sockbuf *sb, con
+ 		char *herr;
+ #ifdef NI_MAXHOST
+ 		char hbuf[NI_MAXHOST];
+-#elif defined( MAXHOSTNAMELEN
++#elif defined( MAXHOSTNAMELEN )
+ 		char hbuf[MAXHOSTNAMELEN];
+ #else
+ 		char hbuf[256];
+--- openldap-2.3.43/include/ldap_pvt_thread.h.orig	2010-05-06 14:35:45.000000000 +0200
++++ openldap-2.3.43/include/ldap_pvt_thread.h	2010-05-06 14:36:08.000000000 +0200
+@@ -61,9 +61,11 @@ ldap_pvt_thread_set_concurrency LDAP_P((
+ 	/* LARGE stack. Will be twice as large on 64 bit machine. */
+ #define LDAP_PVT_THREAD_STACK_SIZE	( 1 * 1024 * 1024 * sizeof(void *) )
+ /* May be explicitly defined to zero to disable it */
+-#elif LDAP_PVT_THREAD_STACK_SIZE == 0
++#else
++#if LDAP_PVT_THREAD_STACK_SIZE == 0
+ #undef LDAP_PVT_THREAD_SET_STACK_SIZE
+ #endif
++#endif
+ #endif /* !LDAP_PVT_THREAD_H_DONE */
+ 
+ LDAP_F( int )
